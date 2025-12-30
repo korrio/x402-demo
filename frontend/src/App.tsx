@@ -1,12 +1,26 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import { WalletConnect } from './components/WalletConnect'
 import { EndpointTester } from './components/EndpointTester'
 import { X402PaymentFlow } from './components/X402PaymentFlow'
-import { cn } from './lib/utils'
+import { cn, formatAddress } from './lib/utils'
+import axios from 'axios'
 
 const App: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'overview' | 'endpoints' | 'flow'>('overview')
   const [walletAddress, setWalletAddress] = useState<string>('')
+  const [apiInfo, setApiInfo] = useState<any>(null)
+
+  useEffect(() => {
+    const fetchApiInfo = async () => {
+      try {
+        const res = await axios.get('http://localhost:3000/')
+        setApiInfo(res.data)
+      } catch {
+        // Backend not running
+      }
+    }
+    fetchApiInfo()
+  }, [])
 
   return (
     <div className="min-h-screen bg-background">
@@ -60,22 +74,29 @@ const App: React.FC = () => {
                 </div>
               </div>
 
-              <div className="border border-border rounded-lg bg-card p-6">
-                <h2 className="text-lg font-semibold mb-4">Configuration</h2>
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                  {[
-                    { label: 'Network', value: 'Sepolia' },
-                    { label: 'Price', value: '0.1 ETH' },
-                    { label: 'API', value: 'localhost:3000' },
-                    { label: 'Frontend', value: 'localhost:5173' },
-                  ].map((item) => (
-                    <div key={item.label} className="bg-secondary rounded-lg p-3">
-                      <div className="text-xs text-muted-foreground mb-1">{item.label}</div>
-                      <div className="text-sm font-medium font-mono">{item.value}</div>
+              {apiInfo?.x402Info && (
+                <div className="border border-border rounded-lg bg-card p-6">
+                  <h2 className="text-lg font-semibold mb-4">Configuration</h2>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                    <div className="bg-secondary rounded-lg p-3">
+                      <div className="text-xs text-muted-foreground mb-1">Network</div>
+                      <div className="text-sm font-medium font-mono">{apiInfo.x402Info.network}</div>
                     </div>
-                  ))}
+                    <div className="bg-secondary rounded-lg p-3">
+                      <div className="text-xs text-muted-foreground mb-1">Chain ID</div>
+                      <div className="text-sm font-medium font-mono">{apiInfo.x402Info.chainId}</div>
+                    </div>
+                    <div className="bg-secondary rounded-lg p-3">
+                      <div className="text-xs text-muted-foreground mb-1">Price</div>
+                      <div className="text-sm font-medium font-mono">{(parseInt(apiInfo.x402Info.price) / 1e18).toFixed(6)} ETH</div>
+                    </div>
+                    <div className="bg-secondary rounded-lg p-3">
+                      <div className="text-xs text-muted-foreground mb-1">Merchant</div>
+                      <div className="text-sm font-medium font-mono">{formatAddress(apiInfo.x402Info.walletAddress)}</div>
+                    </div>
+                  </div>
                 </div>
-              </div>
+              )}
 
               <div className="border border-border rounded-lg bg-card p-6">
                 <h2 className="text-lg font-semibold mb-4">Resources</h2>
@@ -83,6 +104,7 @@ const App: React.FC = () => {
                   {[
                     { label: 'Documentation', url: 'https://x402.gitbook.io/x402' },
                     { label: 'GitHub', url: 'https://github.com/coinbase/x402' },
+                    { label: 'Basescan', url: 'https://basescan.org' },
                   ].map((link) => (
                     <a
                       key={link.url}

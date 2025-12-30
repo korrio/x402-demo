@@ -5,15 +5,16 @@ import { cors } from '@elysiajs/cors'
 const PORT = parseInt(process.env.PORT || '3000')
 const FACILITATOR_URL = process.env.FACILITATOR_URL || 'https://x402.coinbasecloud.io'
 const WALLET_ADDRESS = process.env.WALLET_ADDRESS || '0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb'
-const NETWORK = process.env.NETWORK || 'sepolia'
-const PRICE = process.env.PRICE || '100000000000000000'
+const NETWORK = process.env.NETWORK || 'base'
+const PRICE = process.env.PRICE || '100000000000000000' // 0.1 ETH
+const CHAIN_ID = NETWORK === 'base' ? 8453 : 84532 // 8453 = Base Mainnet, 84532 = Base Sepolia
 
-// x402 payment header template (manual construction for demo)
+// x402 payment header format for BASE
 const createX402Header = (address: string, amount: string) => {
   return `version=1; network=${NETWORK}; address=${address}; amount=${amount}; asset=0x0000000000000000000000000000000000000000; facilitator=${FACILITATOR_URL}`
 }
 
-// Parse x402 header (basic implementation for demo)
+// Parse x402 header
 const parseX402Header = (header: string) => {
   const result: Record<string, string> = {}
   header.split(';').forEach(part => {
@@ -23,13 +24,23 @@ const parseX402Header = (header: string) => {
   return result
 }
 
+// Verified payments cache (in production, use Redis/database)
+const verifiedPayments = new Map<string, { timestamp: number; txHash: string }>()
+
 // Create ElysiaJS app
 const app = new Elysia()
   .use(cors())
-  .decorate('env', { PORT, FACILITATOR_URL, WALLET_ADDRESS, NETWORK, PRICE })
+  .decorate('env', { PORT, FACILITATOR_URL, WALLET_ADDRESS, NETWORK, PRICE, CHAIN_ID })
   .get('/', () => ({
     message: 'x402 Protocol Demo API',
     version: '1.0.0',
+    chain: {
+      id: CHAIN_ID,
+      name: NETWORK === 'base' ? 'Base Mainnet' : 'Base Sepolia',
+      rpc: NETWORK === 'base'
+        ? 'https://mainnet.base.org'
+        : 'https://sepolia.base.org'
+    },
     endpoints: {
       free: {
         '/': 'API information',
@@ -40,10 +51,14 @@ const app = new Elysia()
         '/free': '402 Payment Required (basic, no x402)',
         '/protected': 'x402-protected endpoint',
         '/api/premium': 'Premium API data (x402 protected)'
+      },
+      payment: {
+        '/api/payment/verify': 'Verify payment transaction'
       }
     },
     x402Info: {
       network: NETWORK,
+      chainId: CHAIN_ID,
       price: PRICE,
       walletAddress: WALLET_ADDRESS,
       facilitator: FACILITATOR_URL
@@ -104,46 +119,126 @@ const app = new Elysia()
     })
   })
 
-  // Verify payment endpoint (for x402 client)
-  .get('/api/verify-payment', async ({ request }) => {
-    const paymentHeaderValue = request.headers.get('x402')
+  // Verify payment endpoint
+  .post('/api/payment/verify', async ({ request }) => {
+    const body = await request.json()
+    const { txHash, paymentHeader } = body
 
-    if (!paymentHeaderValue) {
+    if (!txHash || !paymentHeader) {
       return new Response(JSON.stringify({
-        error: 'No payment header provided'
+        error: 'Missing txHash or paymentHeader'
       }), {
-        status: 402,
+        status: 400,
         headers: { 'Content-Type': 'application/json' }
       })
     }
 
-    // Parse the payment header
-    const paymentInfo = parseX402Header(paymentHeaderValue)
+    // Parse payment header to verify amount and recipient
+    const paymentInfo = parseX402Header(paymentHeader)
 
-    // In a real implementation, you would verify the payment with the facilitator
-    // For demo purposes, we'll accept the payment header
+    // In production, you would:
+    // 1. Query the blockchain to verify the transaction
+    // 2. Check txHash exists and is confirmed
+    // 3. Verify amount matches
+    // 4. Verify recipient is correct
+    // 5. Check transaction is not already used
+
+    // For demo, we cache the transaction
+    if (verifiedPayments.has(txHash)) {
+      return {
+        verified: true,
+        alreadyUsed: true,
+        message: 'Transaction already verified'
+      }
+    }
+
+    // Store verified payment (with expiry)
+    verifiedPayments.set(txHash, {
+      timestamp: Date.now(),
+      txHash
+    })
+
+    // Clean up old entries every 100 verifications
+    if (verifiedPayments.size > 100) {
+      const oneHourAgo = Date.now() - 3600000
+      for (const [hash, data] of verifiedPayments) {
+        if (data.timestamp < oneHourAgo) {
+          verifiedPayments.delete(hash)
+        }
+      }
+    }
+
     return {
       verified: true,
-      paymentInfo,
-      content: 'Premium content after payment verification!'
+      paymentInfo: {
+        network: paymentInfo.network,
+        amount: paymentInfo.amount,
+        asset: paymentInfo.asset,
+        facilitator: paymentInfo.facilitator
+      },
+      transactionHash: txHash,
+      message: 'Payment verified successfully'
     }
   }, {
-    response: {
-      402: t.Object({
-        error: t.String()
-      }),
-      200: t.Object({
-        verified: t.Boolean(),
-        paymentInfo: t.Any(),
-        content: t.String()
+    body: t.Object({
+      txHash: t.String(),
+      paymentHeader: t.String()
+    })
+  })
+
+  // Get protected content (requires valid payment proof)
+  .post('/api/content', async ({ request }) => {
+    const body = await request.json()
+    const { txHash, paymentHeader } = body
+
+    if (!txHash || !paymentHeader) {
+      return new Response(JSON.stringify({
+        error: 'Payment required',
+        x402: createX402Header(WALLET_ADDRESS, PRICE)
+      }), {
+        status: 402,
+        headers: {
+          'Content-Type': 'application/json',
+          'x402': createX402Header(WALLET_ADDRESS, PRICE)
+        }
       })
     }
+
+    // Verify payment
+    if (!verifiedPayments.has(txHash)) {
+      return new Response(JSON.stringify({
+        error: 'Invalid or unverified payment',
+        x402: createX402Header(WALLET_ADDRESS, PRICE)
+      }), {
+        status: 402,
+        headers: {
+          'Content-Type': 'application/json',
+          'x402': createX402Header(WALLET_ADDRESS, PRICE)
+        }
+      })
+    }
+
+    // Return protected content
+    return {
+      content: 'This is premium protected content!',
+      data: {
+        secretValue: 'The answer is 42',
+        marketAnalysis: 'Bullish on BASE ecosystem',
+        timestamp: new Date().toISOString()
+      }
+    }
+  }, {
+    body: t.Object({
+      txHash: t.Optional(t.String()),
+      paymentHeader: t.Optional(t.String())
+    })
   })
 
   .listen(PORT, ({ hostname, port }) => {
     console.log(`🦊 x402 Demo API running at http://${hostname}:${port}`)
-    console.log(`   Network: ${NETWORK}`)
+    console.log(`   Network: ${NETWORK} (Chain ID: ${CHAIN_ID})`)
     console.log(`   Price: ${PRICE} wei`)
+    console.log(`   Merchant: ${WALLET_ADDRESS}`)
   })
 
 export type App = typeof app
